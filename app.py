@@ -47,6 +47,7 @@ def keypad_to_hebrew(digits: str) -> str:
             current += ch
 
         elif ch == "*":
+            # ** means make previous letter final
             if i + 1 < len(digits) and digits[i + 1] == "*":
                 if current in FINAL_FORMS:
                     letters.append(FINAL_FORMS[current])
@@ -54,6 +55,8 @@ def keypad_to_hebrew(digits: str) -> str:
                     letters.append(HEBREW_GEMATRIA[current])
                 current = ""
                 i += 1
+
+            # single * means normal separator
             else:
                 if current in HEBREW_GEMATRIA:
                     letters.append(HEBREW_GEMATRIA[current])
@@ -79,31 +82,103 @@ def clean_definition(definition: str) -> str:
     # Remove leading numbering like "1)", "2)", etc.
     definition = re.sub(r"^\s*\d+\)\s*", "", definition)
 
-    # Remove some common Jastrow abbreviations if they appear
-    definition = definition.replace("esp.", "especially")
-    definition = definition.replace("b. h.", "biblical Hebrew")
-    definition = definition.replace("ch.", "Aramaic")
+    # Remove parenthetical notes like "(b. h.)", "(v. ...)", "(of scholars)"
+    definition = re.sub(r"\([^)]*\)", "", definition)
 
-    # Keep it short enough for voice
-    definition = definition.strip(" ;,.-")
+    # Remove some common leading Jastrow labels
+    definition = re.sub(
+        r"^\s*(c\.|f\.|m\.|ch\.|same|preced\.|b\. h\.)\s*",
+        "",
+        definition,
+        flags=re.I,
+    )
+
+    # Cut off examples/source references. Everything after these usually
+    # belongs to citations/examples, not the short definition.
+    source_markers = [
+        "Ukts.", "Ber.", "Maasr.", "Esth.", "Nidd.", "B. Kam.", "Gitt.",
+        "Lam.", "Snh.", "Y.", "Sabb.", "Ned.", "Pes.", "Men.", "Peah",
+        "B. Bath.", "Mekh.", "Erub.", "Sifra", "Yalk.", "Targ.",
+        "R. Hash.", "Yeb.", "Keth.", "Is.", "Pesik.", "Ib.", "Ms.",
+    ]
+
+    for marker in source_markers:
+        idx = definition.find(marker)
+        if idx != -1:
+            definition = definition[:idx]
+
+    # Remove Hebrew/Aramaic text that sometimes survives inside definitions
+    definition = re.sub(r"[\u0590-\u05FF]+", "", definition)
+
+    # Normalize abbreviations
+    definition = definition.replace("esp.", "especially")
+    definition = definition.replace("b. h.", "")
+    definition = definition.replace("ch.", "")
+
+    definition = re.sub(r"\s+", " ", definition)
+    definition = definition.strip(" ;,.-—")
 
     return definition
 
 
+def split_definition_into_phrases(definition: str) -> list[str]:
+    """
+    Turns one cleaned Jastrow definition into short speakable phrases.
+
+    Example:
+      "to stay over the Sabbath; to deliver the Sabbath lecture"
+    becomes:
+      ["to stay over the Sabbath", "to deliver the Sabbath lecture"]
+    """
+    pieces = []
+
+    for part in definition.split(";"):
+        part = part.strip(" ;,.-—")
+        if not part:
+            continue
+
+        # Remove long explanatory tails
+        part = re.sub(r"\bas the center.*$", "", part).strip(" ;,.-")
+        part = re.sub(r"\ballowed to rest, abandoned.*$", "allowed to rest", part).strip(" ;,.-")
+
+        # "especially to observe..." -> "to observe..."
+        part = re.sub(r"^especially\s+", "", part, flags=re.I)
+
+        # Manual cleanup for common compact definitions
+        lower = part.lower()
+
+        if lower == "day of rest, sabbath":
+            pieces.extend(["day of rest", "Sabbath"])
+            continue
+
+        if lower == "to cause to cease, remove":
+            pieces.extend(["to cause to cease", "to remove"])
+            continue
+
+        if lower == "to rest; to observe the sabbath":
+            pieces.extend(["to rest", "to observe the Sabbath"])
+            continue
+
+        pieces.append(part)
+
+    return pieces
+
+
 def extract_definition_phrases(obj):
     """
-    Recursively extract only actual definition fields from the Sefaria
-    Jastrow lexicon object.
+    Recursively extract only short definition phrases from Sefaria's
+    nested Jastrow lexicon object.
 
-    This avoids reading examples, source references, and long entry text.
+    This avoids examples, source references, and long citation text.
     """
     definitions = []
 
     if isinstance(obj, dict):
         if "definition" in obj:
             cleaned = clean_definition(str(obj["definition"]))
+
             if cleaned:
-                definitions.append(cleaned)
+                definitions.extend(split_definition_into_phrases(cleaned))
 
         for value in obj.values():
             definitions.extend(extract_definition_phrases(value))
@@ -120,7 +195,9 @@ def dedupe_preserve_order(items):
     result = []
 
     for item in items:
+        item = item.strip(" ;,.-—")
         key = item.lower().strip()
+
         if key and key not in seen:
             seen.add(key)
             result.append(item)
@@ -167,8 +244,8 @@ def lookup_jastrow(word: str) -> str:
         if not all_definitions:
             return f"Found {word}, but no readable definitions were available."
 
-        # Limit to prevent extremely long calls
-        all_definitions = all_definitions[:35]
+        # Keep voice output manageable
+        all_definitions = all_definitions[:30]
 
         return "Definitions: " + "; ".join(all_definitions)
 
@@ -209,7 +286,7 @@ def voice():
         method="POST",
         timeout=10,
         num_digits=40,
-        finish_on_key="#"
+        finish_on_key="#",
     )
 
     gather.say(
