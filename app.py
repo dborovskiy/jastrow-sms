@@ -137,7 +137,6 @@ def voice():
         input="dtmf",
         action="/voice-keypad-result",
         method="POST",
-        finish_on_key="",
         timeout=10,
         num_digits=40
     )
@@ -161,7 +160,6 @@ def voice():
 @app.route("/voice-keypad-result", methods=["POST"])
 def voice_keypad_result():
     digits = request.form.get("Digits", "").strip()
-    caller = request.form.get("From")
 
     hebrew_word = keypad_to_hebrew(digits)
 
@@ -173,16 +171,13 @@ def voice_keypad_result():
         return str(response), 200, {"Content-Type": "application/xml"}
 
     result = lookup_jastrow(hebrew_word)
+    spoken_result = result[:1000]
 
-    if caller:
-        ok = send_sms(caller, f"You entered: {digits}\nWord: {hebrew_word}\n\n{result}")
-
-        if ok:
-            response.say("I found the word. I texted you the result.")
-        else:
-            response.say("I found the word, but the text message failed to send.")
-    else:
-        response.say("I found the word, but I could not text the result.")
+    response.say(f"You entered the word {hebrew_word}.")
+    response.pause(length=1)
+    response.say(spoken_result)
+    response.pause(length=1)
+    response.say("Goodbye.")
 
     return str(response), 200, {"Content-Type": "application/xml"}
 
