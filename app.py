@@ -4,6 +4,7 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import quote
+import re
 
 app = Flask(__name__)
 
@@ -46,7 +47,6 @@ def keypad_to_hebrew(digits: str) -> str:
             current += ch
 
         elif ch == "*":
-            # ** means make previous letter final
             if i + 1 < len(digits) and digits[i + 1] == "*":
                 if current in FINAL_FORMS:
                     letters.append(FINAL_FORMS[current])
@@ -68,35 +68,64 @@ def keypad_to_hebrew(digits: str) -> str:
 
 
 def clean_html(text: str) -> str:
-    return BeautifulSoup(text or "", "html.parser").get_text(" ", strip=True)
+    text = BeautifulSoup(text or "", "html.parser").get_text(" ", strip=True)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
-def extract_definitions(obj):
+def clean_definition(definition: str) -> str:
+    definition = clean_html(definition)
+
+    # Remove leading numbering like "1)", "2)", etc.
+    definition = re.sub(r"^\s*\d+\)\s*", "", definition)
+
+    # Remove some common Jastrow abbreviations if they appear
+    definition = definition.replace("esp.", "especially")
+    definition = definition.replace("b. h.", "biblical Hebrew")
+    definition = definition.replace("ch.", "Aramaic")
+
+    # Keep it short enough for voice
+    definition = definition.strip(" ;,.-")
+
+    return definition
+
+
+def extract_definition_phrases(obj):
     """
-    Recursively pull readable definition strings out of Sefaria's nested
-    lexicon content structure.
+    Recursively extract only actual definition fields from the Sefaria
+    Jastrow lexicon object.
+
+    This avoids reading examples, source references, and long entry text.
     """
     definitions = []
 
     if isinstance(obj, dict):
         if "definition" in obj:
-            cleaned = clean_html(str(obj["definition"]))
+            cleaned = clean_definition(str(obj["definition"]))
             if cleaned:
                 definitions.append(cleaned)
 
         for value in obj.values():
-            definitions.extend(extract_definitions(value))
+            definitions.extend(extract_definition_phrases(value))
 
     elif isinstance(obj, list):
         for item in obj:
-            definitions.extend(extract_definitions(item))
-
-    elif isinstance(obj, str):
-        cleaned = clean_html(obj)
-        if cleaned:
-            definitions.append(cleaned)
+            definitions.extend(extract_definition_phrases(item))
 
     return definitions
+
+
+def dedupe_preserve_order(items):
+    seen = set()
+    result = []
+
+    for item in items:
+        key = item.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(item)
+
+    return result
 
 
 def lookup_jastrow(word: str) -> str:
@@ -126,17 +155,22 @@ def lookup_jastrow(word: str) -> str:
         if not jastrow_entries:
             return f"No Jastrow result found for: {word}"
 
-        entry = jastrow_entries[0]
-        headword = entry.get("headword", word)
+        all_definitions = []
 
-        definitions = extract_definitions(entry.get("content", {}))
+        for entry in jastrow_entries:
+            content = entry.get("content", {})
+            definitions = extract_definition_phrases(content)
+            all_definitions.extend(definitions)
 
-        if not definitions:
-            return f"Found {headword}, but no readable definition was available."
+        all_definitions = dedupe_preserve_order(all_definitions)
 
-        definition_text = "; ".join(definitions[:4])
+        if not all_definitions:
+            return f"Found {word}, but no readable definitions were available."
 
-        return f"{headword}. {definition_text[:900]}"
+        # Limit to prevent extremely long calls
+        all_definitions = all_definitions[:35]
+
+        return "Definitions: " + "; ".join(all_definitions)
 
     except Exception as e:
         print(f"Sefaria lookup failed: {e}")
@@ -146,7 +180,8 @@ def lookup_jastrow(word: str) -> str:
 def make_voice_text(text: str) -> str:
     text = text.replace("https://", " link omitted ")
     text = text.replace("http://", " link omitted ")
-    return text[:900]
+    text = re.sub(r"\s+", " ", text)
+    return text[:1300]
 
 
 @app.route("/", methods=["GET"])
