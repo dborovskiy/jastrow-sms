@@ -36,11 +36,11 @@ def keypad_to_hebrew(digits: str) -> str:
       300*2*400# -> שבת
       300*40#    -> שם
       40*30*20#  -> מלך
+      1*20*30#   -> אכל
     """
     digits = digits.strip().replace("#", "")
 
     parts = [part for part in digits.split("*") if part]
-
     letters = []
 
     for i, part in enumerate(parts):
@@ -63,21 +63,68 @@ def clean_html(text: str) -> str:
 def clean_definition(definition: str) -> str:
     definition = clean_html(definition)
 
+    # Remove leading numbering like "1)", "2)", etc.
     definition = re.sub(r"^\s*\d+\)\s*", "", definition)
+
+    # Remove parenthetical notes like "(b. h.)", "(v. ...)", "(of scholars)"
     definition = re.sub(r"\([^)]*\)", "", definition)
 
+    # Remove Hebrew/Aramaic text
+    definition = re.sub(r"[\u0590-\u05FF]+", "", definition)
+
+    # Remove Jastrow/editorial abbreviations
+    junk_words = [
+        r"\bInf\.",
+        r"\bPart\.",
+        r"\btrnsf\.",
+        r"\bdenom\.",
+        r"\bcmp\.",
+        r"\bopp\.",
+        r"\bfr\.",
+        r"\ba\. fr\.",
+        r"\ba\. e\.",
+        r"\bv\.",
+        r"&c\.",
+    ]
+
+    for junk in junk_words:
+        definition = re.sub(junk, "", definition, flags=re.I)
+
+    # Remove common leading labels
     definition = re.sub(
-        r"^\s*(c\.|f\.|m\.|ch\.|same|preced\.|b\. h\.)\s*",
+        r"^\s*(c\.|f\.|m\.|ch\.|same|preced\.|b\. h\.|√)\s*",
         "",
         definition,
         flags=re.I,
     )
 
+    # Remove source citations like:
+    # Zeb. I, 3
+    # Tam. I, 4
+    # Dan. III, 8
+    # Sabb. 118a
+    # B. Kam. VIII, 1
+    definition = re.sub(
+        r"\b[A-Z]\.\s*[A-Z][a-zA-Z.]*\.?\s+[IVXLCDM]+,\s*\d+",
+        "",
+        definition,
+    )
+
+    definition = re.sub(
+        r"\b[A-Z][a-zA-Z.]*\.?\s+"
+        r"(?:[IVXLCDM]+|\d+)"
+        r"(?:,\s*\d+)?"
+        r"[a-zᵃᵇᶜᵈ]*",
+        "",
+        definition,
+    )
+
+    # Cut off after strong citation/example markers if any remain
     source_markers = [
-        "Ukts.", "Ber.", "Maasr.", "Esth.", "Nidd.", "B. Kam.", "Gitt.",
-        "Lam.", "Snh.", "Y.", "Sabb.", "Ned.", "Pes.", "Men.", "Peah",
-        "B. Bath.", "Mekh.", "Erub.", "Sifra", "Yalk.", "Targ.",
-        "R. Hash.", "Yeb.", "Keth.", "Is.", "Pesik.", "Ib.", "Ms.",
+        "Zeb.", "Tam.", "Dan.", "Ukts.", "Ber.", "Maasr.", "Esth.", "Nidd.",
+        "B. Kam.", "Gitt.", "Lam.", "Snh.", "Y.", "Sabb.", "Ned.", "Pes.",
+        "Men.", "Peah", "B. Bath.", "Mekh.", "Erub.", "Sifra", "Yalk.",
+        "Targ.", "R. Hash.", "Yeb.", "Keth.", "Is.", "Pesik.", "Ib.", "Ms.",
     ]
 
     for marker in source_markers:
@@ -85,11 +132,11 @@ def clean_definition(definition: str) -> str:
         if idx != -1:
             definition = definition[:idx]
 
-    definition = re.sub(r"[\u0590-\u05FF]+", "", definition)
-
     definition = definition.replace("esp.", "especially")
     definition = definition.replace("b. h.", "")
     definition = definition.replace("ch.", "")
+    definition = definition.replace(" ,", ",")
+    definition = definition.replace(" .", ".")
 
     definition = re.sub(r"\s+", " ", definition)
     definition = definition.strip(" ;,.-—")
@@ -98,6 +145,10 @@ def clean_definition(definition: str) -> str:
 
 
 def split_definition_into_phrases(definition: str) -> list[str]:
+    """
+    Turns cleaned Jastrow definition text into short speakable phrases.
+    Removes source/example leftovers and keeps only definition-like phrases.
+    """
     pieces = []
 
     for part in definition.split(";"):
@@ -105,12 +156,37 @@ def split_definition_into_phrases(definition: str) -> list[str]:
         if not part:
             continue
 
+        # Remove leftover citation fragments
+        part = re.sub(r"\b[A-Z]\.\s*[A-Z][a-zA-Z.]*\.?\s+[IVXLCDM]+,\s*\d+", "", part)
+        part = re.sub(r"\b[A-Z][a-zA-Z.]*\.?\s+[IVXLCDM]+,\s*\d+", "", part)
+
+        # Remove phrases that are clearly examples, not definitions
+        bad_markers = [
+            "the thoroughly lighted coals",
+            "the informer’s bread",
+            "the informer's bread",
+            "hence",
+            "with prop.",
+            "Ms.",
+            "ed.",
+            "opp.",
+        ]
+
+        if any(marker.lower() in part.lower() for marker in bad_markers):
+            continue
+
+        # Remove common tails
         part = re.sub(r"\bas the center.*$", "", part).strip(" ;,.-")
         part = re.sub(r"\ballowed to rest, abandoned.*$", "allowed to rest", part).strip(" ;,.-")
         part = re.sub(r"^especially\s+", "", part, flags=re.I)
 
+        # Remove dangling words
+        part = re.sub(r"\bInf\b$", "", part).strip(" ;,.-")
+        part = re.sub(r"\bv\b$", "", part).strip(" ;,.-")
+
         lower = part.lower()
 
+        # Manual cleanup for common compact definitions
         if lower == "day of rest, sabbath":
             pieces.extend(["day of rest", "Sabbath"])
             continue
@@ -123,12 +199,20 @@ def split_definition_into_phrases(definition: str) -> list[str]:
             pieces.extend(["to rest", "to observe the Sabbath"])
             continue
 
+        # Avoid very long example-like fragments
+        if len(part.split()) > 12:
+            continue
+
         pieces.append(part)
 
     return pieces
 
 
 def extract_definition_phrases(obj):
+    """
+    Recursively extract only short definition phrases from Sefaria's
+    nested Jastrow lexicon object.
+    """
     definitions = []
 
     if isinstance(obj, dict):
