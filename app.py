@@ -37,6 +37,7 @@ def keypad_to_hebrew(digits: str) -> str:
       300*40#    -> שם
       40*30*20#  -> מלך
       1*20*30#   -> אכל
+      80*3*300#  -> פגש
     """
     digits = digits.strip().replace("#", "")
 
@@ -80,6 +81,12 @@ def clean_definition(definition: str) -> str:
 
     # Remove ibid fragments like ib. 65ᵇ
     definition = re.sub(r"\bib\.?\s*\d*[a-zᵃᵇᶜᵈ]*", "", definition, flags=re.I)
+
+    # Remove Midrash-style citations like Deut. R. s. 9
+    definition = re.sub(r"\b[A-Z][a-z]+\.\s+R\.\s+s\.\s*\d+\b", "", definition)
+
+    # Remove "infra", "supra", etc.
+    definition = re.sub(r"\b(infra|supra)\b", "", definition, flags=re.I)
 
     # Remove Jastrow/editorial abbreviations
     junk_words = [
@@ -130,10 +137,11 @@ def clean_definition(definition: str) -> str:
 
     # Cut off after strong citation/example markers if any remain
     source_markers = [
-        "Zeb.", "Tam.", "Dan.", "Ukts.", "Ber.", "Maasr.", "Esth.", "Nidd.",
-        "B. Kam.", "Gitt.", "Lam.", "Snh.", "Y.", "Sabb.", "Ned.", "Pes.",
-        "Men.", "Peah", "B. Bath.", "Mekh.", "Erub.", "Sifra", "Yalk.",
-        "Targ.", "R. Hash.", "Yeb.", "Keth.", "Is.", "Pesik.", "Ib.", "Ms.",
+        "Zeb.", "Tam.", "Dan.", "Deut. R.", "Ukts.", "Ber.", "Maasr.",
+        "Esth.", "Nidd.", "B. Kam.", "Gitt.", "Lam.", "Snh.", "Y.",
+        "Sabb.", "Ned.", "Pes.", "Men.", "Peah", "B. Bath.", "Mekh.",
+        "Erub.", "Sifra", "Yalk.", "Targ.", "R. Hash.", "Yeb.", "Keth.",
+        "Is.", "Pesik.", "Ib.", "Ms.",
     ]
 
     for marker in source_markers:
@@ -174,6 +182,9 @@ def split_definition_into_phrases(definition: str) -> list[str]:
         # Remove citation fragments like ib. 65b, Ib. 65ᵇ
         part = re.sub(r"\bib\.?\s*\d*[a-zᵃᵇᶜᵈ]*", "", part, flags=re.I)
 
+        # Remove Midrash-style citations like Deut. R. s. 9
+        part = re.sub(r"\b[A-Z][a-z]+\.\s+R\.\s+s\.\s*\d+\b", "", part)
+
         # Remove leftover citation fragments
         part = re.sub(r"\b[A-Z]\.\s*[A-Z][a-zA-Z.]*\.?\s+[IVXLCDM]+,\s*\d+", "", part)
         part = re.sub(r"\b[A-Z][a-zA-Z.]*\.?\s+[IVXLCDM]+,\s*\d+", "", part)
@@ -184,6 +195,7 @@ def split_definition_into_phrases(definition: str) -> list[str]:
         part = re.sub(r"\btrnsf\.?\b", "", part, flags=re.I)
         part = re.sub(r"\bdiffer\. of opin\.?", "", part, flags=re.I)
         part = re.sub(r"\bwith prop\.?", "", part, flags=re.I)
+        part = re.sub(r"\b(infra|supra)\b", "", part, flags=re.I)
         part = re.sub(r"&c\.?", "", part, flags=re.I)
 
         # Remove phrases that are clearly examples, not definitions
@@ -191,6 +203,10 @@ def split_definition_into_phrases(definition: str) -> list[str]:
             "the thoroughly lighted coals",
             "the informer’s bread",
             "the informer's bread",
+            "thou didst meet the angel",
+            "k’far",
+            "k'far",
+            "paggash",
             "hence",
             "Ms.",
             "ed.",
@@ -211,7 +227,6 @@ def split_definition_into_phrases(definition: str) -> list[str]:
         part = re.sub(r"\s+", " ", part)
         part = part.strip(" ;,.-—")
 
-        # Drop meaningless fragments
         lower = part.lower().strip()
 
         meaningless = {
@@ -226,6 +241,8 @@ def split_definition_into_phrases(definition: str) -> list[str]:
             "fr",
             "a fr",
             "a e",
+            "infra",
+            "supra",
         }
 
         if lower in meaningless:
