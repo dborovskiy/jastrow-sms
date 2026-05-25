@@ -26,46 +26,30 @@ FINAL_FORMS = {
 def keypad_to_hebrew(digits: str) -> str:
     """
     Rules:
-      *  = separator between letters
-      ** = make previous letter final
-      #  = finish key
+      * = separator between letters
+      # = finish key
+
+    Final form rule:
+      If the last letter has a final form, use the final form automatically.
 
     Examples:
       300*2*400# -> שבת
-      300*40**#  -> שם
+      300*40#    -> שם
+      40*30*20#  -> מלך
     """
     digits = digits.strip().replace("#", "")
 
+    parts = [part for part in digits.split("*") if part]
+
     letters = []
-    current = ""
-    i = 0
 
-    while i < len(digits):
-        ch = digits[i]
+    for i, part in enumerate(parts):
+        is_last = i == len(parts) - 1
 
-        if ch.isdigit():
-            current += ch
-
-        elif ch == "*":
-            # ** means make previous letter final
-            if i + 1 < len(digits) and digits[i + 1] == "*":
-                if current in FINAL_FORMS:
-                    letters.append(FINAL_FORMS[current])
-                elif current in HEBREW_GEMATRIA:
-                    letters.append(HEBREW_GEMATRIA[current])
-                current = ""
-                i += 1
-
-            # single * means normal separator
-            else:
-                if current in HEBREW_GEMATRIA:
-                    letters.append(HEBREW_GEMATRIA[current])
-                current = ""
-
-        i += 1
-
-    if current and current in HEBREW_GEMATRIA:
-        letters.append(HEBREW_GEMATRIA[current])
+        if is_last and part in FINAL_FORMS:
+            letters.append(FINAL_FORMS[part])
+        elif part in HEBREW_GEMATRIA:
+            letters.append(HEBREW_GEMATRIA[part])
 
     return "".join(letters)
 
@@ -79,13 +63,9 @@ def clean_html(text: str) -> str:
 def clean_definition(definition: str) -> str:
     definition = clean_html(definition)
 
-    # Remove leading numbering like "1)", "2)", etc.
     definition = re.sub(r"^\s*\d+\)\s*", "", definition)
-
-    # Remove parenthetical notes like "(b. h.)", "(v. ...)", "(of scholars)"
     definition = re.sub(r"\([^)]*\)", "", definition)
 
-    # Remove some common leading Jastrow labels
     definition = re.sub(
         r"^\s*(c\.|f\.|m\.|ch\.|same|preced\.|b\. h\.)\s*",
         "",
@@ -93,8 +73,6 @@ def clean_definition(definition: str) -> str:
         flags=re.I,
     )
 
-    # Cut off examples/source references. Everything after these usually
-    # belongs to citations/examples, not the short definition.
     source_markers = [
         "Ukts.", "Ber.", "Maasr.", "Esth.", "Nidd.", "B. Kam.", "Gitt.",
         "Lam.", "Snh.", "Y.", "Sabb.", "Ned.", "Pes.", "Men.", "Peah",
@@ -107,10 +85,8 @@ def clean_definition(definition: str) -> str:
         if idx != -1:
             definition = definition[:idx]
 
-    # Remove Hebrew/Aramaic text that sometimes survives inside definitions
     definition = re.sub(r"[\u0590-\u05FF]+", "", definition)
 
-    # Normalize abbreviations
     definition = definition.replace("esp.", "especially")
     definition = definition.replace("b. h.", "")
     definition = definition.replace("ch.", "")
@@ -122,14 +98,6 @@ def clean_definition(definition: str) -> str:
 
 
 def split_definition_into_phrases(definition: str) -> list[str]:
-    """
-    Turns one cleaned Jastrow definition into short speakable phrases.
-
-    Example:
-      "to stay over the Sabbath; to deliver the Sabbath lecture"
-    becomes:
-      ["to stay over the Sabbath", "to deliver the Sabbath lecture"]
-    """
     pieces = []
 
     for part in definition.split(";"):
@@ -137,14 +105,10 @@ def split_definition_into_phrases(definition: str) -> list[str]:
         if not part:
             continue
 
-        # Remove long explanatory tails
         part = re.sub(r"\bas the center.*$", "", part).strip(" ;,.-")
         part = re.sub(r"\ballowed to rest, abandoned.*$", "allowed to rest", part).strip(" ;,.-")
-
-        # "especially to observe..." -> "to observe..."
         part = re.sub(r"^especially\s+", "", part, flags=re.I)
 
-        # Manual cleanup for common compact definitions
         lower = part.lower()
 
         if lower == "day of rest, sabbath":
@@ -165,12 +129,6 @@ def split_definition_into_phrases(definition: str) -> list[str]:
 
 
 def extract_definition_phrases(obj):
-    """
-    Recursively extract only short definition phrases from Sefaria's
-    nested Jastrow lexicon object.
-
-    This avoids examples, source references, and long citation text.
-    """
     definitions = []
 
     if isinstance(obj, dict):
@@ -244,7 +202,6 @@ def lookup_jastrow(word: str) -> str:
         if not all_definitions:
             return f"Found {word}, but no readable definitions were available."
 
-        # Keep voice output manageable
         all_definitions = all_definitions[:30]
 
         return "Definitions: " + "; ".join(all_definitions)
@@ -292,9 +249,10 @@ def voice():
     gather.say(
         "Enter the Hebrew word using gematria numbers. "
         "Use star between letters. "
-        "Use star star after a number for a final letter. "
         "Press pound when done. "
-        "For example, for Shabbos, enter 300 star 2 star 400 pound."
+        "The last letter will automatically use its final form when available. "
+        "For example, for Shabbos, enter 300 star 2 star 400 pound. "
+        "For sham, enter 300 star 40 pound."
     )
 
     response.append(gather)
