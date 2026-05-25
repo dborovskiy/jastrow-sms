@@ -72,6 +72,15 @@ def clean_definition(definition: str) -> str:
     # Remove Hebrew/Aramaic text
     definition = re.sub(r"[\u0590-\u05FF]+", "", definition)
 
+    # Remove superscript citation markers like 65ᵇ, 39ᵃ
+    definition = re.sub(r"\b\d+[ᵃᵇᶜᵈ]\b", "", definition)
+
+    # Remove Roman numeral citations like VI, 25
+    definition = re.sub(r"\b[IVXLCDM]+,\s*\d+\b", "", definition)
+
+    # Remove ibid fragments like ib. 65ᵇ
+    definition = re.sub(r"\bib\.?\s*\d*[a-zᵃᵇᶜᵈ]*", "", definition, flags=re.I)
+
     # Remove Jastrow/editorial abbreviations
     junk_words = [
         r"\bInf\.",
@@ -156,9 +165,26 @@ def split_definition_into_phrases(definition: str) -> list[str]:
         if not part:
             continue
 
+        # Remove superscript markers like 65ᵇ, 39ᵃ, 7ᶜ
+        part = re.sub(r"\b\d+[ᵃᵇᶜᵈ]\b", "", part)
+
+        # Remove Roman numeral citations like VI, 25 or III, 8
+        part = re.sub(r"\b[IVXLCDM]+,\s*\d+\b", "", part)
+
+        # Remove citation fragments like ib. 65b, Ib. 65ᵇ
+        part = re.sub(r"\bib\.?\s*\d*[a-zᵃᵇᶜᵈ]*", "", part, flags=re.I)
+
         # Remove leftover citation fragments
         part = re.sub(r"\b[A-Z]\.\s*[A-Z][a-zA-Z.]*\.?\s+[IVXLCDM]+,\s*\d+", "", part)
         part = re.sub(r"\b[A-Z][a-zA-Z.]*\.?\s+[IVXLCDM]+,\s*\d+", "", part)
+
+        # Remove editorial/source abbreviations
+        part = re.sub(r"\bInf\.?\b", "", part, flags=re.I)
+        part = re.sub(r"\bPart\.?\b", "", part, flags=re.I)
+        part = re.sub(r"\btrnsf\.?\b", "", part, flags=re.I)
+        part = re.sub(r"\bdiffer\. of opin\.?", "", part, flags=re.I)
+        part = re.sub(r"\bwith prop\.?", "", part, flags=re.I)
+        part = re.sub(r"&c\.?", "", part, flags=re.I)
 
         # Remove phrases that are clearly examples, not definitions
         bad_markers = [
@@ -166,7 +192,6 @@ def split_definition_into_phrases(definition: str) -> list[str]:
             "the informer’s bread",
             "the informer's bread",
             "hence",
-            "with prop.",
             "Ms.",
             "ed.",
             "opp.",
@@ -180,11 +205,36 @@ def split_definition_into_phrases(definition: str) -> list[str]:
         part = re.sub(r"\ballowed to rest, abandoned.*$", "allowed to rest", part).strip(" ;,.-")
         part = re.sub(r"^especially\s+", "", part, flags=re.I)
 
-        # Remove dangling words
-        part = re.sub(r"\bInf\b$", "", part).strip(" ;,.-")
-        part = re.sub(r"\bv\b$", "", part).strip(" ;,.-")
+        # Clean punctuation/spaces
+        part = part.replace(" ,", ",")
+        part = part.replace(" .", ".")
+        part = re.sub(r"\s+", " ", part)
+        part = part.strip(" ;,.-—")
 
-        lower = part.lower()
+        # Drop meaningless fragments
+        lower = part.lower().strip()
+
+        meaningless = {
+            "in",
+            "a",
+            "v",
+            "ib",
+            "ib.",
+            "c",
+            "d",
+            "e",
+            "fr",
+            "a fr",
+            "a e",
+        }
+
+        if lower in meaningless:
+            continue
+
+        # Drop fragments that are just letters/numbers/punctuation
+        if re.fullmatch(r"[a-zA-Zᵃᵇᶜᵈ0-9\s,.-]+", part) and len(part.split()) <= 2:
+            if not part.lower().startswith("to "):
+                continue
 
         # Manual cleanup for common compact definitions
         if lower == "day of rest, sabbath":
