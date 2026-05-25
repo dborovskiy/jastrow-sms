@@ -9,28 +9,11 @@ app = Flask(__name__)
 LEXICON = "Jastrow Dictionary"
 
 HEBREW_GEMATRIA = {
-    "1": "א",
-    "2": "ב",
-    "3": "ג",
-    "4": "ד",
-    "5": "ה",
-    "6": "ו",
-    "7": "ז",
-    "8": "ח",
-    "9": "ט",
-    "10": "י",
-    "20": "כ",
-    "30": "ל",
-    "40": "מ",
-    "50": "נ",
-    "60": "ס",
-    "70": "ע",
-    "80": "פ",
-    "90": "צ",
-    "100": "ק",
-    "200": "ר",
-    "300": "ש",
-    "400": "ת",
+    "1": "א", "2": "ב", "3": "ג", "4": "ד", "5": "ה",
+    "6": "ו", "7": "ז", "8": "ח", "9": "ט", "10": "י",
+    "20": "כ", "30": "ל", "40": "מ", "50": "נ", "60": "ס",
+    "70": "ע", "80": "פ", "90": "צ", "100": "ק",
+    "200": "ר", "300": "ש", "400": "ת",
 }
 
 FINAL_FORMS = {
@@ -45,16 +28,15 @@ FINAL_FORMS = {
 def keypad_to_hebrew(digits: str) -> str:
     """
     Rules:
-      #  = separator between letters
-      ## = end of word
-      *  = make previous letter final
+      *  = separator between letters
+      ** = make previous letter final
+      #  = finish key
 
     Examples:
-      300#2#400## -> שבת
-      300#40*##   -> שם
+      300*2*400# -> שבת
+      300*40**#  -> שם
     """
-
-    digits = digits.strip()
+    digits = digits.strip().replace("#", "")
 
     letters = []
     current = ""
@@ -67,28 +49,17 @@ def keypad_to_hebrew(digits: str) -> str:
             current += ch
 
         elif ch == "*":
-            if current in FINAL_FORMS:
-                letters.append(FINAL_FORMS[current])
-            elif current in HEBREW_GEMATRIA:
-                letters.append(HEBREW_GEMATRIA[current])
-
-            current = ""
-
-        elif ch == "#":
-
-            # detect ##
-            if i + 1 < len(digits) and digits[i + 1] == "#":
-
-                if current in HEBREW_GEMATRIA:
+            # ** means make previous letter final
+            if i + 1 < len(digits) and digits[i + 1] == "*":
+                if current in FINAL_FORMS:
+                    letters.append(FINAL_FORMS[current])
+                elif current in HEBREW_GEMATRIA:
                     letters.append(HEBREW_GEMATRIA[current])
-
-                current = ""   # prevents duplicate last letter
-                break
-
+                current = ""
+                i += 1
             else:
                 if current in HEBREW_GEMATRIA:
                     letters.append(HEBREW_GEMATRIA[current])
-
                 current = ""
 
         i += 1
@@ -110,12 +81,9 @@ def lookup_jastrow(word: str) -> str:
             f"https://www.sefaria.org/api/words/completion/"
             f"{quote(word)}/{quote(LEXICON)}"
         )
-
         response = requests.get(url, timeout=10)
         response.raise_for_status()
-
         matches = response.json()
-
         print("SEFARIA MATCHES:", matches)
 
     except Exception as e:
@@ -128,7 +96,6 @@ def lookup_jastrow(word: str) -> str:
     lines = []
 
     for match in matches[:3]:
-
         if isinstance(match, list):
             plain = match[0]
             pointed = match[1] if len(match) > 1 else plain
@@ -136,9 +103,19 @@ def lookup_jastrow(word: str) -> str:
             plain = str(match)
             pointed = plain
 
-        lines.append(pointed)
+        link = f"https://www.sefaria.org/Jastrow,_Dictionary.{quote(plain)}"
+        lines.append(f"{pointed}\n{link}")
 
     return "Top Jastrow matches:\n\n" + "\n\n".join(lines)
+
+
+def make_voice_text(text: str) -> str:
+    """
+    Removes links and keeps the spoken response short.
+    """
+    text = text.split("https://")[0]
+    text = text.split("http://")[0]
+    return text[:700]
 
 
 @app.route("/", methods=["GET"])
@@ -148,21 +125,16 @@ def home():
 
 @app.route("/sms", methods=["POST"])
 def sms():
-
     incoming = request.form.get("Body", "").strip()
 
     response = MessagingResponse()
-
-    result = lookup_jastrow(incoming)
-
-    response.message(result[:1500])
+    response.message(lookup_jastrow(incoming)[:1500])
 
     return str(response), 200, {"Content-Type": "application/xml"}
 
 
 @app.route("/voice", methods=["POST"])
 def voice():
-
     response = VoiceResponse()
 
     gather = Gather(
@@ -170,22 +142,21 @@ def voice():
         action="/voice-keypad-result",
         method="POST",
         timeout=10,
-        num_digits=40
+        num_digits=40,
+        finish_on_key="#"
     )
 
     gather.say(
         "Enter the Hebrew word using gematria numbers. "
-        "Use pound between letters. "
-        "Use star after a number for a final letter. "
-        "Use pound pound to end the word. "
-        "For example, for Shabbos, enter "
-        "300 pound 2 pound 400 pound pound."
+        "Use star between letters. "
+        "Use star star after a number for a final letter. "
+        "Press pound when done. "
+        "For example, for Shabbos, enter 300 star 2 star 400 pound."
     )
 
     response.append(gather)
 
     response.say("I did not receive any digits. Please try again.")
-
     response.redirect("/voice")
 
     return str(response), 200, {"Content-Type": "application/xml"}
@@ -193,9 +164,7 @@ def voice():
 
 @app.route("/voice-keypad-result", methods=["POST"])
 def voice_keypad_result():
-
     digits = request.form.get("Digits", "").strip()
-
     hebrew_word = keypad_to_hebrew(digits)
 
     print("DIGITS:", digits)
@@ -204,28 +173,17 @@ def voice_keypad_result():
     response = VoiceResponse()
 
     if not hebrew_word:
-
-        response.say(
-            "Sorry, I could not understand the keypad entry. "
-            "Please try again."
-        )
-
+        response.say("Sorry, I could not understand the keypad entry. Please try again.")
         response.redirect("/voice")
-
         return str(response), 200, {"Content-Type": "application/xml"}
 
     result = lookup_jastrow(hebrew_word)
-
-    spoken_result = result[:1000]
+    spoken_result = make_voice_text(result)
 
     response.say(f"You entered the word {hebrew_word}.")
-
     response.pause(length=1)
-
     response.say(spoken_result)
-
     response.pause(length=1)
-
     response.say("Goodbye.")
 
     return str(response), 200, {"Content-Type": "application/xml"}
@@ -233,15 +191,14 @@ def voice_keypad_result():
 
 @app.route("/test/<path:digits>", methods=["GET"])
 def test_digits(digits):
-
     hebrew_word = keypad_to_hebrew(digits)
-
     result = lookup_jastrow(hebrew_word)
 
     return {
         "digits": digits,
         "parsed_hebrew_word": hebrew_word,
-        "jastrow_result": result
+        "jastrow_result": result,
+        "voice_text": make_voice_text(result)
     }
 
 
