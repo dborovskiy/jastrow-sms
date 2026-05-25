@@ -11,28 +11,11 @@ app = Flask(__name__)
 LEXICON = "Jastrow Dictionary"
 
 HEBREW_GEMATRIA = {
-    "1": "א",
-    "2": "ב",
-    "3": "ג",
-    "4": "ד",
-    "5": "ה",
-    "6": "ו",
-    "7": "ז",
-    "8": "ח",
-    "9": "ט",
-    "10": "י",
-    "20": "כ",
-    "30": "ל",
-    "40": "מ",
-    "50": "נ",
-    "60": "ס",
-    "70": "ע",
-    "80": "פ",
-    "90": "צ",
-    "100": "ק",
-    "200": "ר",
-    "300": "ש",
-    "400": "ת",
+    "1": "א", "2": "ב", "3": "ג", "4": "ד", "5": "ה",
+    "6": "ו", "7": "ז", "8": "ח", "9": "ט", "10": "י",
+    "20": "כ", "30": "ל", "40": "מ", "50": "נ", "60": "ס",
+    "70": "ע", "80": "פ", "90": "צ", "100": "ק",
+    "200": "ר", "300": "ש", "400": "ת",
 }
 
 FINAL_FORMS = {
@@ -45,19 +28,27 @@ FINAL_FORMS = {
 
 
 def keypad_to_hebrew(digits: str) -> str:
+    """
+    Rules:
+      #  = separator between letters
+      ## = end of word
+      *  = make previous letter final
+
+    Examples:
+      300#2#400## -> שבת
+      300#40*##   -> שם
+    """
     digits = digits.strip()
 
     letters = []
     current = ""
+    i = 0
 
-    for ch in digits:
+    while i < len(digits):
+        ch = digits[i]
+
         if ch.isdigit():
             current += ch
-
-        elif ch == "#":
-            if current in HEBREW_GEMATRIA:
-                letters.append(HEBREW_GEMATRIA[current])
-            current = ""
 
         elif ch == "*":
             if current in FINAL_FORMS:
@@ -66,9 +57,20 @@ def keypad_to_hebrew(digits: str) -> str:
                 letters.append(HEBREW_GEMATRIA[current])
             current = ""
 
-    if current:
-        if current in HEBREW_GEMATRIA:
-            letters.append(HEBREW_GEMATRIA[current])
+        elif ch == "#":
+            if i + 1 < len(digits) and digits[i + 1] == "#":
+                if current in HEBREW_GEMATRIA:
+                    letters.append(HEBREW_GEMATRIA[current])
+                break
+            else:
+                if current in HEBREW_GEMATRIA:
+                    letters.append(HEBREW_GEMATRIA[current])
+                current = ""
+
+        i += 1
+
+    if current and current in HEBREW_GEMATRIA:
+        letters.append(HEBREW_GEMATRIA[current])
 
     return "".join(letters)
 
@@ -134,14 +136,15 @@ def voice():
         method="POST",
         finish_on_key="",
         timeout=10,
-        num_digits=30
+        num_digits=40
     )
 
     gather.say(
         "Enter the Hebrew word using gematria numbers. "
         "Use pound between letters. "
         "Use star after a number for a final letter. "
-        "For example, for Shabbos, enter 300 pound 2 pound 400."
+        "Use pound pound to end the word. "
+        "For example, for Shabbos, enter 300 pound 2 pound 400 pound pound."
     )
 
     response.append(gather)
