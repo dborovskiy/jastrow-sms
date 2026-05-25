@@ -28,16 +28,6 @@ FINAL_FORMS = {
 
 
 def keypad_to_hebrew(digits: str) -> str:
-    """
-    Rules:
-      #  = separator between letters
-      ## = end of word
-      *  = make previous letter final
-
-    Examples:
-      300#2#400## -> שבת
-      300#40*##   -> שם
-    """
     digits = digits.strip()
 
     letters = []
@@ -81,8 +71,14 @@ def lookup_jastrow(word: str) -> str:
     if not word:
         return "No word detected."
 
-    url = f"https://www.sefaria.org/api/words/completion/{quote(word)}/{quote(LEXICON)}"
-    matches = requests.get(url, timeout=10).json()
+    try:
+        url = f"https://www.sefaria.org/api/words/completion/{quote(word)}/{quote(LEXICON)}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        matches = response.json()
+    except Exception as e:
+        print(f"Sefaria lookup failed: {e}")
+        return f"Lookup failed for: {word}"
 
     if not matches:
         return f"No Jastrow result found for: {word}"
@@ -98,17 +94,24 @@ def lookup_jastrow(word: str) -> str:
     return "Top Jastrow matches:\n\n" + "\n\n".join(lines)
 
 
-def send_sms(to_number: str, body: str):
-    client = Client(
-        os.environ["TWILIO_ACCOUNT_SID"],
-        os.environ["TWILIO_AUTH_TOKEN"]
-    )
+def send_sms(to_number: str, body: str) -> bool:
+    try:
+        client = Client(
+            os.environ["TWILIO_ACCOUNT_SID"],
+            os.environ["TWILIO_AUTH_TOKEN"]
+        )
 
-    client.messages.create(
-        body=body[:1500],
-        from_=os.environ["TWILIO_PHONE_NUMBER"],
-        to=to_number
-    )
+        client.messages.create(
+            body=body[:1500],
+            from_=os.environ["TWILIO_PHONE_NUMBER"],
+            to=to_number
+        )
+
+        return True
+
+    except Exception as e:
+        print(f"SMS send failed: {e}")
+        return False
 
 
 @app.route("/", methods=["GET"])
@@ -172,8 +175,12 @@ def voice_keypad_result():
     result = lookup_jastrow(hebrew_word)
 
     if caller:
-        send_sms(caller, f"You entered: {digits}\nWord: {hebrew_word}\n\n{result}")
-        response.say("I found the word. I texted you the result.")
+        ok = send_sms(caller, f"You entered: {digits}\nWord: {hebrew_word}\n\n{result}")
+
+        if ok:
+            response.say("I found the word. I texted you the result.")
+        else:
+            response.say("I found the word, but the text message failed to send.")
     else:
         response.say("I found the word, but I could not text the result.")
 
