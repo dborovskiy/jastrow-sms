@@ -2,6 +2,7 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
 import requests
+from bs4 import BeautifulSoup
 from urllib.parse import quote
 
 app = Flask(__name__)
@@ -17,25 +18,11 @@ HEBREW_GEMATRIA = {
 }
 
 FINAL_FORMS = {
-    "20": "ך",
-    "40": "ם",
-    "50": "ן",
-    "80": "ף",
-    "90": "ץ",
+    "20": "ך", "40": "ם", "50": "ן", "80": "ף", "90": "ץ",
 }
 
 
 def keypad_to_hebrew(digits: str) -> str:
-    """
-    Rules:
-      *  = separator between letters
-      ** = make previous letter final
-      #  = finish key
-
-    Examples:
-      300*2*400# -> שבת
-      300*40**#  -> שם
-    """
     digits = digits.strip().replace("#", "")
 
     letters = []
@@ -47,9 +34,7 @@ def keypad_to_hebrew(digits: str) -> str:
 
         if ch.isdigit():
             current += ch
-
         elif ch == "*":
-            # ** means make previous letter final
             if i + 1 < len(digits) and digits[i + 1] == "*":
                 if current in FINAL_FORMS:
                     letters.append(FINAL_FORMS[current])
@@ -70,6 +55,10 @@ def keypad_to_hebrew(digits: str) -> str:
     return "".join(letters)
 
 
+def clean_html(text: str) -> str:
+    return BeautifulSoup(text or "", "html.parser").get_text(" ", strip=True)
+
+
 def lookup_jastrow(word: str) -> str:
     word = word.strip()
 
@@ -77,45 +66,63 @@ def lookup_jastrow(word: str) -> str:
         return "No word detected."
 
     try:
-        url = (
+        completion_url = (
             f"https://www.sefaria.org/api/words/completion/"
             f"{quote(word)}/{quote(LEXICON)}"
         )
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        matches = response.json()
+        completion_response = requests.get(completion_url, timeout=10)
+        completion_response.raise_for_status()
+        matches = completion_response.json()
+
         print("SEFARIA MATCHES:", matches)
+
+        if not matches:
+            return f"No Jastrow result found for: {word}"
+
+        first_match = matches[0]
+
+        if isinstance(first_match, list):
+            headword = first_match[0]
+        else:
+            headword = str(first_match)
+
+        entry_url = f"https://www.sefaria.org/api/words?lookup_ref={quote(headword)}"
+        entry_response = requests.get(entry_url, timeout=10)
+        entry_response.raise_for_status()
+        entry_data = entry_response.json()
+
+        print("ENTRY DATA:", entry_data)
+
+        items = entry_data.get("items", [])
+
+        if not items:
+            return f"Found {headword}, but no definition was available."
+
+        entry = items[0]
+        definition = ""
+
+        if isinstance(entry, dict):
+            content = entry.get("content", "")
+
+            if isinstance(content, dict):
+                definition = " ".join(clean_html(str(v)) for v in content.values())
+            else:
+                definition = clean_html(str(content))
+
+        if not definition:
+            definition = f"Found entry for {headword}, but definition unavailable."
+
+        return f"{headword}. {definition[:900]}"
 
     except Exception as e:
         print(f"Sefaria lookup failed: {e}")
         return f"Lookup failed for: {word}"
 
-    if not matches:
-        return f"No Jastrow result found for: {word}"
-
-    lines = []
-
-    for match in matches[:3]:
-        if isinstance(match, list):
-            plain = match[0]
-            pointed = match[1] if len(match) > 1 else plain
-        else:
-            plain = str(match)
-            pointed = plain
-
-        link = f"https://www.sefaria.org/Jastrow,_Dictionary.{quote(plain)}"
-        lines.append(f"{pointed}\n{link}")
-
-    return "Top Jastrow matches:\n\n" + "\n\n".join(lines)
-
 
 def make_voice_text(text: str) -> str:
-    """
-    Removes links and keeps the spoken response short.
-    """
-    text = text.split("https://")[0]
-    text = text.split("http://")[0]
-    return text[:700]
+    text = text.replace("https://", " link omitted ")
+    text = text.replace("http://", " link omitted ")
+    return text[:900]
 
 
 @app.route("/", methods=["GET"])
@@ -198,7 +205,7 @@ def test_digits(digits):
         "digits": digits,
         "parsed_hebrew_word": hebrew_word,
         "jastrow_result": result,
-        "voice_text": make_voice_text(result)
+        "voice_text": make_voice_text(result),
     }
 
 
