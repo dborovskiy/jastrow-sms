@@ -23,6 +23,16 @@ FINAL_FORMS = {
 
 
 def keypad_to_hebrew(digits: str) -> str:
+    """
+    Rules:
+      *  = separator between letters
+      ** = make previous letter final
+      #  = finish key
+
+    Examples:
+      300*2*400# -> שבת
+      300*40**#  -> שם
+    """
     digits = digits.strip().replace("#", "")
 
     letters = []
@@ -34,7 +44,9 @@ def keypad_to_hebrew(digits: str) -> str:
 
         if ch.isdigit():
             current += ch
+
         elif ch == "*":
+            # ** means make previous letter final
             if i + 1 < len(digits) and digits[i + 1] == "*":
                 if current in FINAL_FORMS:
                     letters.append(FINAL_FORMS[current])
@@ -59,6 +71,34 @@ def clean_html(text: str) -> str:
     return BeautifulSoup(text or "", "html.parser").get_text(" ", strip=True)
 
 
+def extract_definitions(obj):
+    """
+    Recursively pull readable definition strings out of Sefaria's nested
+    lexicon content structure.
+    """
+    definitions = []
+
+    if isinstance(obj, dict):
+        if "definition" in obj:
+            cleaned = clean_html(str(obj["definition"]))
+            if cleaned:
+                definitions.append(cleaned)
+
+        for value in obj.values():
+            definitions.extend(extract_definitions(value))
+
+    elif isinstance(obj, list):
+        for item in obj:
+            definitions.extend(extract_definitions(item))
+
+    elif isinstance(obj, str):
+        cleaned = clean_html(obj)
+        if cleaned:
+            definitions.append(cleaned)
+
+    return definitions
+
+
 def lookup_jastrow(word: str) -> str:
     word = word.strip()
 
@@ -66,53 +106,37 @@ def lookup_jastrow(word: str) -> str:
         return "No word detected."
 
     try:
-        completion_url = (
-            f"https://www.sefaria.org/api/words/completion/"
-            f"{quote(word)}/{quote(LEXICON)}"
-        )
-        completion_response = requests.get(completion_url, timeout=10)
-        completion_response.raise_for_status()
-        matches = completion_response.json()
+        url = f"https://www.sefaria.org/api/words/{quote(word)}"
 
-        print("SEFARIA MATCHES:", matches)
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        entries = response.json()
 
-        if not matches:
+        print("WORD LOOKUP ENTRIES:", entries)
+
+        if not entries:
             return f"No Jastrow result found for: {word}"
 
-        first_match = matches[0]
+        jastrow_entries = [
+            entry for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("parent_lexicon") == LEXICON
+        ]
 
-        if isinstance(first_match, list):
-            headword = first_match[0]
-        else:
-            headword = str(first_match)
+        if not jastrow_entries:
+            return f"No Jastrow result found for: {word}"
 
-        entry_url = f"https://www.sefaria.org/api/words?lookup_ref={quote(headword)}"
-        entry_response = requests.get(entry_url, timeout=10)
-        entry_response.raise_for_status()
-        entry_data = entry_response.json()
+        entry = jastrow_entries[0]
+        headword = entry.get("headword", word)
 
-        print("ENTRY DATA:", entry_data)
+        definitions = extract_definitions(entry.get("content", {}))
 
-        items = entry_data.get("items", [])
+        if not definitions:
+            return f"Found {headword}, but no readable definition was available."
 
-        if not items:
-            return f"Found {headword}, but no definition was available."
+        definition_text = "; ".join(definitions[:4])
 
-        entry = items[0]
-        definition = ""
-
-        if isinstance(entry, dict):
-            content = entry.get("content", "")
-
-            if isinstance(content, dict):
-                definition = " ".join(clean_html(str(v)) for v in content.values())
-            else:
-                definition = clean_html(str(content))
-
-        if not definition:
-            definition = f"Found entry for {headword}, but definition unavailable."
-
-        return f"{headword}. {definition[:900]}"
+        return f"{headword}. {definition_text[:900]}"
 
     except Exception as e:
         print(f"Sefaria lookup failed: {e}")
