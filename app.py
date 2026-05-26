@@ -9,8 +9,12 @@ import re
 app = Flask(__name__)
 
 LEXICON = "Jastrow Dictionary"
+
 HEBREW_VOICE = "Google.he-IL-Standard-B"
 HEBREW_LANGUAGE = "he-IL"
+
+ENGLISH_VOICE = "Google.en-US-Chirp3-HD-Charon"
+ENGLISH_LANGUAGE = "en-US"
 
 HEBREW_GEMATRIA = {
     "1": "א", "2": "ב", "3": "ג", "4": "ד", "5": "ה",
@@ -73,7 +77,6 @@ def extract_italic_text_from_definition(html: str) -> list[str]:
         nonlocal seen_meaningful_text, allow_next_italic_after_number
 
         for child in getattr(node, "children", []):
-            # Italic node
             if getattr(child, "name", None) in ["i", "em"]:
                 italic_text = child.get_text(" ", strip=True)
 
@@ -91,35 +94,27 @@ def extract_italic_text_from_definition(html: str) -> list[str]:
                     allow_next_italic_after_number = False
 
                 else:
-                    # Italic text appears later in an example/citation;
-                    # intentionally ignore it.
                     seen_meaningful_text = True
 
-            # Other HTML tag
             elif getattr(child, "name", None) is not None:
                 walk(child)
 
-            # Plain text node
             else:
                 text = str(child).strip()
 
                 if not text:
                     continue
 
-                # If text is only a numbered marker like 1), 2), 3),
-                # then the next italic phrase is allowed.
                 if re.fullmatch(r"\d+\)", text):
                     allow_next_italic_after_number = True
                     seen_meaningful_text = True
                     continue
 
-                # If text ends with a numbered marker, e.g. "... 1)"
                 if re.search(r"\d+\)\s*$", text):
                     allow_next_italic_after_number = True
                     seen_meaningful_text = True
                     continue
 
-                # Otherwise this is ordinary non-italic text.
                 seen_meaningful_text = True
                 allow_next_italic_after_number = False
 
@@ -204,14 +199,59 @@ def dedupe_preserve_order(items):
     return result
 
 
+def clean_result_key_for_speech(key: str) -> str:
+    """
+    Clean a Jastrow headword/result key before saying it out loud.
+
+    Goals:
+      - keep Hebrew letters and Hebrew vowels/nikud
+      - remove numbers, Roman numerals, Latin labels, punctuation
+      - avoid reading things like I, II, 1, 2, f., m., ch., etc.
+    """
+    key = BeautifulSoup(str(key or ""), "html.parser").get_text(" ", strip=True)
+
+    # Keep only Hebrew Unicode block characters and spaces.
+    # This keeps nikud/vowels because they are in the Hebrew block too.
+    key = re.sub(r"[^\u0590-\u05FF\s]", " ", key)
+
+    key = re.sub(r"\s+", " ", key).strip()
+
+    return key
+
+
+def dedupe_result_keys(keys: list[str]) -> list[str]:
+    """
+    Dedupe spoken Hebrew result keys.
+
+    If the exact same vocalized form appears twice, say it only once.
+    """
+    seen = set()
+    result = []
+
+    for key in keys:
+        cleaned = clean_result_key_for_speech(key)
+
+        if not cleaned:
+            continue
+
+        # Same vowels/nikud means same exact normalized Hebrew string.
+        dedupe_key = re.sub(r"\s+", " ", cleaned).strip()
+
+        if dedupe_key not in seen:
+            seen.add(dedupe_key)
+            result.append(cleaned)
+
+    return result
+
+
 def lookup_jastrow_data(word: str) -> dict:
     """
-    Returns structured lookup data:
+    Returns structured lookup data.
 
     {
         "ok": bool,
         "word": Hebrew query word,
-        "result_keys": Hebrew/Aramaic headwords from Jastrow entries,
+        "result_keys": cleaned Hebrew/Aramaic headwords,
         "definitions": italic definitions,
         "error": optional error string
     }
@@ -269,7 +309,7 @@ def lookup_jastrow_data(word: str) -> dict:
             content = entry.get("content", {})
             all_italic_text.extend(extract_italic_text(content))
 
-        result_keys = dedupe_preserve_order(result_keys)
+        result_keys = dedupe_result_keys(result_keys)
         all_italic_text = dedupe_preserve_order(all_italic_text)
 
         if not all_italic_text:
@@ -324,9 +364,6 @@ def make_voice_text(text: str) -> str:
 
 
 def say_hebrew(response: VoiceResponse, text: str):
-    """
-    Say text using the requested Hebrew Google voice.
-    """
     response.say(
         text,
         voice=HEBREW_VOICE,
@@ -334,17 +371,22 @@ def say_hebrew(response: VoiceResponse, text: str):
     )
 
 
-def say_chunks(response: VoiceResponse, text: str, chunk_size: int = 900):
-    """
-    Twilio <Say> is easier to manage if long text is split into chunks.
-    """
+def say_english(response: VoiceResponse, text: str):
+    response.say(
+        text,
+        voice=ENGLISH_VOICE,
+        language=ENGLISH_LANGUAGE,
+    )
+
+
+def say_english_chunks(response: VoiceResponse, text: str, chunk_size: int = 900):
     text = make_voice_text(text)
 
     for i in range(0, len(text), chunk_size):
         chunk = text[i:i + chunk_size].strip()
 
         if chunk:
-            say_hebrew(response, chunk)
+            say_english(response, chunk)
             response.pause(length=1)
 
 
@@ -381,12 +423,14 @@ def voice():
         "Use star between letters. "
         "Press pound when done. "
         "The last letter will automatically use its final form when available. "
-        "For example, for Shabbos, enter 300 star 2 star 400 pound."
+        "For example, for Shabbos, enter 300 star 2 star 400 pound.",
+        voice=ENGLISH_VOICE,
+        language=ENGLISH_LANGUAGE,
     )
 
     response.append(gather)
 
-    response.say("I did not receive any digits. Please try again.")
+    say_english(response, "I did not receive any digits. Please try again.")
     response.redirect("/voice")
 
     return str(response), 200, {"Content-Type": "application/xml"}
@@ -403,35 +447,35 @@ def voice_keypad_result():
     response = VoiceResponse()
 
     if not hebrew_word:
-        response.say("Sorry, I could not understand the keypad entry. Please try again.")
+        say_english(response, "Sorry, I could not understand the keypad entry. Please try again.")
         response.redirect("/voice")
         return str(response), 200, {"Content-Type": "application/xml"}
 
     data = lookup_jastrow_data(hebrew_word)
 
     if not data["ok"]:
-        say_hebrew(response, data["error"])
+        say_english(response, data["error"])
         response.pause(length=1)
-        say_hebrew(response, "Goodbye.")
+        say_english(response, "Goodbye.")
         return str(response), 200, {"Content-Type": "application/xml"}
 
     result_keys = data["result_keys"]
     definitions = data["definitions"]
 
-    say_hebrew(response, "Definitions found for")
+    say_english(response, "Definitions found for")
     response.pause(length=1)
 
     for key in result_keys:
         say_hebrew(response, key)
         response.pause(length=1)
 
-    say_hebrew(response, "The definitions are")
+    say_english(response, "The definitions are")
     response.pause(length=1)
 
     definitions_text = "; ".join(definitions)
-    say_chunks(response, definitions_text)
+    say_english_chunks(response, definitions_text)
 
-    say_hebrew(response, "Goodbye.")
+    say_english(response, "Goodbye.")
 
     return str(response), 200, {"Content-Type": "application/xml"}
 
