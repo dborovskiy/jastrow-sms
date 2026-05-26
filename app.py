@@ -29,18 +29,16 @@ def keypad_to_hebrew(digits: str) -> str:
       * = separator between letters
       # = finish key
 
-    Final form rule:
-      If the last letter has a final form, use the final form automatically.
+    Last letter automatically uses final form when available.
 
     Examples:
       300*2*400# -> שבת
       300*40#    -> שם
-      40*30*20#  -> מלך
       1*20*30#   -> אכל
-      80*3*300#  -> פגש
     """
     digits = digits.strip().replace("#", "")
     parts = [part for part in digits.split("*") if part]
+
     letters = []
 
     for i, part in enumerate(parts):
@@ -54,230 +52,31 @@ def keypad_to_hebrew(digits: str) -> str:
     return "".join(letters)
 
 
-def clean_html(text: str) -> str:
-    text = BeautifulSoup(text or "", "html.parser").get_text(" ", strip=True)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def remove_citation_noise(text: str) -> str:
+def extract_italic_text(obj):
     """
-    Aggressively removes Jastrow citation/reference clutter while trying
-    to preserve short English definition phrases.
+    Recursively extract only the exact text inside <i> or <em> tags.
+    No definition cleaning, no citation removal, no extra processing.
     """
-    text = clean_html(text)
-
-    # Remove Hebrew/Aramaic and Greek characters.
-    text = re.sub(r"[\u0590-\u05FF]+", " ", text)
-    text = re.sub(r"[\u0370-\u03FF]+", " ", text)
-
-    # Remove parenthetical notes: (b. h.), (v. ...), (of scholars), etc.
-    text = re.sub(r"\([^)]*\)", " ", text)
-
-    # Remove leading sense numbers: 1), 2), etc.
-    text = re.sub(r"^\s*\d+\)\s*", "", text)
-
-    # Remove superscript letters and page markers: 65ᵇ, 39ᵃ, 7ᶜ, etc.
-    text = re.sub(r"\b\d+[ᵃᵇᶜᵈ]\b", " ", text)
-    text = re.sub(r"[ᵃᵇᶜᵈ]", " ", text)
-
-    # Remove Roman numeral citations: VI, 25; III, 8; XXI, 19.
-    text = re.sub(r"\b[IVXLCDM]+,\s*\d+\b", " ", text)
-
-    # Remove standalone biblical-style references like Ex. XXI, 19.
-    text = re.sub(r"\b[A-Z][a-z]{1,8}\.\s*[IVXLCDM]+,\s*\d+\b", " ", text)
-
-    # Remove rabbinic source citations:
-    # B. Kam. VIII, 1; Deut. R. s. 9; Lam. R. to V, 14; Y. Ber. IV, 7c.
-    text = re.sub(r"\b[A-Z]\.\s*[A-Z][a-zA-Z.]*\.?\s+[IVXLCDM]+,\s*\d+\b", " ", text)
-    text = re.sub(r"\b[A-Z][a-z]+\.?\s+R\.\s+(?:s\.|to)?\s*[IVXLCDM\d]+(?:,\s*\d+)?\b", " ", text)
-    text = re.sub(r"\bY\.\s*[A-Z][a-zA-Z.]*\.?\s+[IVXLCDM]+,\s*\d+[a-zᵃᵇᶜᵈ]*\b", " ", text)
-
-    # Remove generic tractate/source citations: Sabb. 118a, Zeb. I, 3, Tam. I, 4.
-    text = re.sub(
-        r"\b[A-Z][a-zA-Z.]*\.?\s+(?:[IVXLCDM]+|\d+)(?:,\s*\d+)?[a-zᵃᵇᶜᵈ]*\b",
-        " ",
-        text,
-    )
-
-    # Remove ibid/cross-reference fragments.
-    text = re.sub(r"\bib\.?\s*\d*[a-zᵃᵇᶜᵈ]*", " ", text, flags=re.I)
-    text = re.sub(r"\b(?:v|vid|vide)\.?\s+[A-Za-z\u0590-\u05FF]+", " ", text, flags=re.I)
-    text = re.sub(r"\b(?:v|vid|vide)\.?\b", " ", text, flags=re.I)
-
-    # Remove common editorial/Jastrow abbreviations.
-    abbreviations = [
-        "Inf", "Part", "Pl", "Sing", "cmp", "opp", "denom", "trnsf",
-        "transf", "esp", "ed", "Ms", "Ar", "ch", "b. h", "a. fr",
-        "a. e", "bot", "top", "l. c", "oth", "preced", "same",
-        "supra", "infra",
-    ]
-    for abbr in abbreviations:
-        pattern = r"\b" + re.escape(abbr) + r"\.?\b"
-        text = re.sub(pattern, " ", text, flags=re.I)
-
-    # Remove "&c.", "etc.", and similar tails.
-    text = re.sub(r"&c\.?|etc\.?", " ", text, flags=re.I)
-
-    # Remove common quoted/example lead-ins.
-    text = re.sub(r"\b(read|ref\.?|expl\.?|opp\.?|Ms\.?|ed\.?)\b.*$", " ", text, flags=re.I)
-
-    # Remove known example-style phrases that are not definitions.
-    example_patterns = [
-        r"thou didst meet.*$",
-        r"k[’']far.*$",
-        r"the thoroughly lighted coals.*$",
-        r"the informer[’']s bread.*$",
-        r"where the transient poor.*$",
-        r"if a person goes away.*$",
-        r"the place of the throne.*$",
-        r"so that the king.*$",
-        r"to estimate indemnity.*$",
-        r"whenever one is bound.*$",
-        r"there are two kinds.*$",
-        r"this refers to.*$",
-        r"a gentile that.*$",
-        r"rest like the Lord.*$",
-        r"he who forswears.*$",
-        r"a light which.*$",
-        r"a kind of salt.*$",
-        r"once the disciples.*$",
-        r"and who lectured.*$",
-        r"is it possible.*$",
-        r"thou mayest.*$",
-        r"went down to.*$",
-        r"went up and.*$",
-        r"the laws concerning.*$",
-        r"I have a precious.*$",
-        r"we Jews have.*$",
-        r"one must break.*$",
-        r"one should always.*$",
-        r"come ye.*$",
-        r"two ministering angels.*$",
-        r"Jerusalem was destroyed.*$",
-        r"which falls on.*$",
-        r"whose Sabbath was it.*$",
-        r"if Israel were.*$",
-        r"if one says.*$",
-        r"when do you find.*$",
-        r"during those.*$",
-        r"name of a treatise.*$",
-    ]
-
-    for pattern in example_patterns:
-        text = re.sub(pattern, " ", text, flags=re.I)
-
-    # Clean punctuation and spacing.
-    text = text.replace("—", ";")
-    text = text.replace("–", ";")
-    text = text.replace(" .", ".")
-    text = text.replace(" ,", ",")
-    text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"\s*;\s*", "; ", text)
-    text = re.sub(r"\s*,\s*", ", ", text)
-    text = text.strip(" ;,.-")
-
-    return text
-
-
-def split_definition_into_phrases(definition: str) -> list[str]:
-    """
-    Split cleaned definition text into short phrases and discard anything
-    that still looks like citation/reference/example noise.
-    """
-    text = remove_citation_noise(definition)
-
-    # Split at semicolons first.
-    raw_parts = text.split(";")
-    pieces = []
-
-    for part in raw_parts:
-        part = part.strip(" ;,.-")
-        if not part:
-            continue
-
-        lower = part.lower()
-
-        # More cleanup after splitting.
-        part = re.sub(r"^\s*(c|f|m|ch|same|preced|root|√)\.?\s+", "", part, flags=re.I)
-        part = re.sub(r"\b(in|a|fr|ib|v)\.?\b", " ", part, flags=re.I)
-        part = re.sub(r"\s+", " ", part).strip(" ;,.-")
-        lower = part.lower()
-
-        if not part:
-            continue
-
-        # Drop fragments that are almost certainly citations or residue.
-        meaningless = {
-            "in", "a", "v", "ib", "fr", "c", "d", "e", "bot", "top",
-            "differ of opin", "differ. of opin",
-        }
-
-        if lower in meaningless:
-            continue
-
-        if re.search(r"\b[IVXLCDM]+,\s*\d+\b", part):
-            continue
-
-        if re.search(r"\b\d+[ᵃᵇᶜᵈ]\b", part):
-            continue
-
-        if re.search(r"\b[A-Z][a-z]+\.?\s+[IVXLCDM\d]", part):
-            continue
-
-        if re.search(r"\b(?:deut|sabb|zeb|tam|dan|ber|yeb|keth|gitt|ned|pes|men|peah|erub|sifra|targ|yalk)\b", lower):
-            continue
-
-        if re.search(r"\b(the|thou|where|when|who|which|if|ib|ms|ed)\b", lower) and not lower.startswith("to "):
-            # Most of these are example sentences, not definitions.
-            continue
-
-        if len(part.split()) > 10:
-            continue
-
-        # Manual refinements for common compact definitions.
-        if lower == "day of rest, sabbath":
-            pieces.extend(["day of rest", "Sabbath"])
-            continue
-
-        if lower == "to cause to cease, remove":
-            pieces.extend(["to cause to cease", "to remove"])
-            continue
-
-        if lower == "to rest, cease":
-            pieces.append("to rest, cease")
-            continue
-
-        # Prefer short definition-like phrases.
-        if (
-            lower.startswith("to ")
-            or lower.startswith("a ")
-            or lower.startswith("an ")
-            or lower.startswith("the ")
-            or "," in part
-            or len(part.split()) <= 4
-        ):
-            pieces.append(part)
-
-    return pieces
-
-
-def extract_definition_phrases(obj):
-    definitions = []
+    results = []
 
     if isinstance(obj, dict):
         if "definition" in obj:
-            phrases = split_definition_into_phrases(str(obj["definition"]))
-            definitions.extend(phrases)
+            html = str(obj["definition"])
+            soup = BeautifulSoup(html, "html.parser")
+
+            for tag in soup.find_all(["i", "em"]):
+                text = tag.get_text(" ", strip=True)
+                if text:
+                    results.append(text)
 
         for value in obj.values():
-            definitions.extend(extract_definition_phrases(value))
+            results.extend(extract_italic_text(value))
 
     elif isinstance(obj, list):
         for item in obj:
-            definitions.extend(extract_definition_phrases(item))
+            results.extend(extract_italic_text(item))
 
-    return definitions
+    return results
 
 
 def dedupe_preserve_order(items):
@@ -285,11 +84,10 @@ def dedupe_preserve_order(items):
     result = []
 
     for item in items:
-        item = item.strip(" ;,.-")
-        item = re.sub(r"\s+", " ", item)
+        item = re.sub(r"\s+", " ", item).strip()
         key = item.lower()
 
-        if key and key not in seen:
+        if item and key not in seen:
             seen.add(key)
             result.append(item)
 
@@ -321,21 +119,18 @@ def lookup_jastrow(word: str) -> str:
         if not jastrow_entries:
             return f"No Jastrow result found for: {word}"
 
-        all_definitions = []
+        all_italic_text = []
 
         for entry in jastrow_entries:
             content = entry.get("content", {})
-            definitions = extract_definition_phrases(content)
-            all_definitions.extend(definitions)
+            all_italic_text.extend(extract_italic_text(content))
 
-        all_definitions = dedupe_preserve_order(all_definitions)
+        all_italic_text = dedupe_preserve_order(all_italic_text)
 
-        if not all_definitions:
-            return f"Found {word}, but no readable definitions were available."
+        if not all_italic_text:
+            return f"Found {word}, but no italicized text was available."
 
-        all_definitions = all_definitions[:30]
-
-        return "Definitions: " + "; ".join(all_definitions)
+        return "Italic text: " + "; ".join(all_italic_text[:40])
 
     except Exception as e:
         print(f"Sefaria lookup failed: {e}")
@@ -343,8 +138,6 @@ def lookup_jastrow(word: str) -> str:
 
 
 def make_voice_text(text: str) -> str:
-    text = text.replace("https://", " link omitted ")
-    text = text.replace("http://", " link omitted ")
     text = re.sub(r"\s+", " ", text)
     return text[:1300]
 
@@ -382,8 +175,7 @@ def voice():
         "Use star between letters. "
         "Press pound when done. "
         "The last letter will automatically use its final form when available. "
-        "For example, for Shabbos, enter 300 star 2 star 400 pound. "
-        "For sham, enter 300 star 40 pound."
+        "For example, for Shabbos, enter 300 star 2 star 400 pound."
     )
 
     response.append(gather)
