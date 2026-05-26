@@ -35,6 +35,7 @@ def keypad_to_hebrew(digits: str) -> str:
       300*2*400# -> שבת
       300*40#    -> שם
       1*20*30#   -> אכל
+      80*3*300#  -> פגש
     """
     digits = digits.strip().replace("#", "")
     parts = [part for part in digits.split("*") if part]
@@ -52,22 +53,91 @@ def keypad_to_hebrew(digits: str) -> str:
     return "".join(letters)
 
 
+def extract_italic_text_from_definition(html: str) -> list[str]:
+    """
+    Extract italic text only when it is:
+      1. the first meaningful text in the definition, or
+      2. the first italic text after a numbered marker like 1), 2), 3)
+
+    No extra definition-cleaning is applied.
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+
+    results = []
+    seen_meaningful_text = False
+    allow_next_italic_after_number = False
+
+    def walk(node):
+        nonlocal seen_meaningful_text, allow_next_italic_after_number
+
+        for child in getattr(node, "children", []):
+            # Italic node
+            if getattr(child, "name", None) in ["i", "em"]:
+                italic_text = child.get_text(" ", strip=True)
+
+                if not italic_text:
+                    continue
+
+                if not seen_meaningful_text:
+                    results.append(italic_text)
+                    seen_meaningful_text = True
+                    allow_next_italic_after_number = False
+
+                elif allow_next_italic_after_number:
+                    results.append(italic_text)
+                    seen_meaningful_text = True
+                    allow_next_italic_after_number = False
+
+                else:
+                    # Italic text appears later in an example/citation;
+                    # intentionally ignore it.
+                    seen_meaningful_text = True
+
+            # Other HTML tag
+            elif getattr(child, "name", None) is not None:
+                walk(child)
+
+            # Plain text node
+            else:
+                text = str(child).strip()
+
+                if not text:
+                    continue
+
+                # If text is only a numbered marker like 1), 2), 3),
+                # then the next italic phrase is allowed.
+                if re.fullmatch(r"\d+\)", text):
+                    allow_next_italic_after_number = True
+                    seen_meaningful_text = True
+                    continue
+
+                # If text ends with a numbered marker, e.g. "... 1)"
+                if re.search(r"\d+\)\s*$", text):
+                    allow_next_italic_after_number = True
+                    seen_meaningful_text = True
+                    continue
+
+                # Otherwise this is ordinary non-italic text.
+                seen_meaningful_text = True
+                allow_next_italic_after_number = False
+
+    walk(soup)
+
+    return results
+
+
 def extract_italic_text(obj):
     """
-    Recursively extract only the exact text inside <i> or <em> tags.
-    No definition cleaning, no citation removal, no extra processing.
+    Recursively extract only italic text that passes the rule:
+      - first italic text in a definition, or
+      - first italic text after 1), 2), etc.
     """
     results = []
 
     if isinstance(obj, dict):
         if "definition" in obj:
             html = str(obj["definition"])
-            soup = BeautifulSoup(html, "html.parser")
-
-            for tag in soup.find_all(["i", "em"]):
-                text = tag.get_text(" ", strip=True)
-                if text:
-                    results.append(text)
+            results.extend(extract_italic_text_from_definition(html))
 
         for value in obj.values():
             results.extend(extract_italic_text(value))
@@ -128,9 +198,9 @@ def lookup_jastrow(word: str) -> str:
         all_italic_text = dedupe_preserve_order(all_italic_text)
 
         if not all_italic_text:
-            return f"Found {word}, but no italicized text was available."
+            return f"Found {word}, but no rule-matching italicized text was available."
 
-        return "Italic text: " + "; ".join(all_italic_text[:40])
+        return "Definitions: " + "; ".join(all_italic_text[:40])
 
     except Exception as e:
         print(f"Sefaria lookup failed: {e}")
@@ -223,6 +293,63 @@ def test_digits(digits):
         "parsed_hebrew_word": hebrew_word,
         "jastrow_result": result,
         "voice_text": make_voice_text(result),
+    }
+
+
+@app.route("/debug/<path:digits>", methods=["GET"])
+def debug_digits(digits):
+    """
+    Debug route to inspect raw definition HTML and rule-matching italic text.
+    """
+    hebrew_word = keypad_to_hebrew(digits)
+
+    url = f"https://www.sefaria.org/api/words/{quote(hebrew_word)}"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    entries = response.json()
+
+    debug_results = []
+
+    def walk_debug(obj):
+        out = []
+
+        if isinstance(obj, dict):
+            if "definition" in obj:
+                html = str(obj["definition"])
+                soup = BeautifulSoup(html or "", "html.parser")
+
+                out.append({
+                    "raw_html": html,
+                    "plain_text": soup.get_text(" ", strip=True),
+                    "all_italic_text": [
+                        tag.get_text(" ", strip=True)
+                        for tag in soup.find_all(["i", "em"])
+                    ],
+                    "rule_matched_italic_text": extract_italic_text_from_definition(html),
+                })
+
+            for value in obj.values():
+                out.extend(walk_debug(value))
+
+        elif isinstance(obj, list):
+            for item in obj:
+                out.extend(walk_debug(item))
+
+        return out
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        if entry.get("parent_lexicon") != LEXICON:
+            continue
+
+        debug_results.extend(walk_debug(entry.get("content", {})))
+
+    return {
+        "digits": digits,
+        "parsed_hebrew_word": hebrew_word,
+        "debug_results": debug_results,
     }
 
 
