@@ -9,6 +9,8 @@ import re
 app = Flask(__name__)
 
 LEXICON = "Jastrow Dictionary"
+HEBREW_VOICE = "Google.he-IL-Standard-B"
+HEBREW_LANGUAGE = "he-IL"
 
 HEBREW_GEMATRIA = {
     "1": "א", "2": "ב", "3": "ג", "4": "ד", "5": "ה",
@@ -149,26 +151,81 @@ def extract_italic_text(obj):
     return results
 
 
+def normalize_for_dedupe(text: str) -> str:
+    """
+    Normalize aggressively for duplicate detection only.
+    This does not change the text shown to the user.
+    """
+    text = re.sub(r"\s+", " ", text).strip().lower()
+
+    text = text.replace("’", "'").replace("‘", "'")
+    text = text.replace("“", '"').replace("”", '"')
+
+    text = re.sub(r"[.;:,\-—–]+", " ", text)
+    text = re.sub(r"[\[\]{}()]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text
+
+
+def split_definition_items(items: list[str]) -> list[str]:
+    """
+    Some italic strings may contain multiple definitions separated by semicolons.
+    Split them before deduping.
+    """
+    split_items = []
+
+    for item in items:
+        item = re.sub(r"\s+", " ", item).strip()
+
+        if not item:
+            continue
+
+        for piece in item.split(";"):
+            piece = re.sub(r"\s+", " ", piece).strip(" ;,.-")
+
+            if piece:
+                split_items.append(piece)
+
+    return split_items
+
+
 def dedupe_preserve_order(items):
     seen = set()
     result = []
 
-    for item in items:
-        item = re.sub(r"\s+", " ", item).strip()
-        key = item.lower()
+    for item in split_definition_items(items):
+        key = normalize_for_dedupe(item)
 
-        if item and key not in seen:
+        if key and key not in seen:
             seen.add(key)
             result.append(item)
 
     return result
 
 
-def lookup_jastrow(word: str) -> str:
+def lookup_jastrow_data(word: str) -> dict:
+    """
+    Returns structured lookup data:
+
+    {
+        "ok": bool,
+        "word": Hebrew query word,
+        "result_keys": Hebrew/Aramaic headwords from Jastrow entries,
+        "definitions": italic definitions,
+        "error": optional error string
+    }
+    """
     word = word.strip()
 
     if not word:
-        return "No word detected."
+        return {
+            "ok": False,
+            "word": word,
+            "result_keys": [],
+            "definitions": [],
+            "error": "No word detected.",
+        }
 
     try:
         url = f"https://www.sefaria.org/api/words/{quote(word)}"
@@ -178,7 +235,13 @@ def lookup_jastrow(word: str) -> str:
         entries = response.json()
 
         if not entries:
-            return f"No Jastrow result found for: {word}"
+            return {
+                "ok": False,
+                "word": word,
+                "result_keys": [],
+                "definitions": [],
+                "error": f"No Jastrow result found for: {word}",
+            }
 
         jastrow_entries = [
             entry for entry in entries
@@ -187,29 +250,102 @@ def lookup_jastrow(word: str) -> str:
         ]
 
         if not jastrow_entries:
-            return f"No Jastrow result found for: {word}"
+            return {
+                "ok": False,
+                "word": word,
+                "result_keys": [],
+                "definitions": [],
+                "error": f"No Jastrow result found for: {word}",
+            }
 
+        result_keys = []
         all_italic_text = []
 
         for entry in jastrow_entries:
+            headword = entry.get("headword") or entry.get("word") or word
+            if headword:
+                result_keys.append(str(headword))
+
             content = entry.get("content", {})
             all_italic_text.extend(extract_italic_text(content))
 
+        result_keys = dedupe_preserve_order(result_keys)
         all_italic_text = dedupe_preserve_order(all_italic_text)
 
         if not all_italic_text:
-            return f"Found {word}, but no rule-matching italicized text was available."
+            return {
+                "ok": False,
+                "word": word,
+                "result_keys": result_keys,
+                "definitions": [],
+                "error": f"Found {word}, but no rule-matching italicized text was available.",
+            }
 
-        return "Definitions: " + "; ".join(all_italic_text[:40])
+        return {
+            "ok": True,
+            "word": word,
+            "result_keys": result_keys[:20],
+            "definitions": all_italic_text[:40],
+            "error": None,
+        }
 
     except Exception as e:
         print(f"Sefaria lookup failed: {e}")
-        return f"Lookup failed for: {word}"
+        return {
+            "ok": False,
+            "word": word,
+            "result_keys": [],
+            "definitions": [],
+            "error": f"Lookup failed for: {word}",
+        }
+
+
+def lookup_jastrow(word: str) -> str:
+    """
+    Text/SMS-friendly formatted output.
+    """
+    data = lookup_jastrow_data(word)
+
+    if not data["ok"]:
+        return data["error"]
+
+    keys_text = "; ".join(data["result_keys"])
+    definitions_text = "; ".join(data["definitions"])
+
+    if keys_text:
+        return f"Definitions found for: {keys_text}\n\nDefinitions: {definitions_text}"
+
+    return f"Definitions: {definitions_text}"
 
 
 def make_voice_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
     return text[:1300]
+
+
+def say_hebrew(response: VoiceResponse, text: str):
+    """
+    Say text using the requested Hebrew Google voice.
+    """
+    response.say(
+        text,
+        voice=HEBREW_VOICE,
+        language=HEBREW_LANGUAGE,
+    )
+
+
+def say_chunks(response: VoiceResponse, text: str, chunk_size: int = 900):
+    """
+    Twilio <Say> is easier to manage if long text is split into chunks.
+    """
+    text = make_voice_text(text)
+
+    for i in range(0, len(text), chunk_size):
+        chunk = text[i:i + chunk_size].strip()
+
+        if chunk:
+            say_hebrew(response, chunk)
+            response.pause(length=1)
 
 
 @app.route("/", methods=["GET"])
@@ -271,14 +407,31 @@ def voice_keypad_result():
         response.redirect("/voice")
         return str(response), 200, {"Content-Type": "application/xml"}
 
-    result = lookup_jastrow(hebrew_word)
-    spoken_result = make_voice_text(result)
+    data = lookup_jastrow_data(hebrew_word)
 
-    response.say(f"You entered the word {hebrew_word}.")
+    if not data["ok"]:
+        say_hebrew(response, data["error"])
+        response.pause(length=1)
+        say_hebrew(response, "Goodbye.")
+        return str(response), 200, {"Content-Type": "application/xml"}
+
+    result_keys = data["result_keys"]
+    definitions = data["definitions"]
+
+    say_hebrew(response, "Definitions found for")
     response.pause(length=1)
-    response.say(spoken_result)
+
+    for key in result_keys:
+        say_hebrew(response, key)
+        response.pause(length=1)
+
+    say_hebrew(response, "The definitions are")
     response.pause(length=1)
-    response.say("Goodbye.")
+
+    definitions_text = "; ".join(definitions)
+    say_chunks(response, definitions_text)
+
+    say_hebrew(response, "Goodbye.")
 
     return str(response), 200, {"Content-Type": "application/xml"}
 
@@ -286,13 +439,17 @@ def voice_keypad_result():
 @app.route("/test/<path:digits>", methods=["GET"])
 def test_digits(digits):
     hebrew_word = keypad_to_hebrew(digits)
-    result = lookup_jastrow(hebrew_word)
+    data = lookup_jastrow_data(hebrew_word)
 
     return {
         "digits": digits,
         "parsed_hebrew_word": hebrew_word,
-        "jastrow_result": result,
-        "voice_text": make_voice_text(result),
+        "result_keys": data.get("result_keys", []),
+        "definitions": data.get("definitions", []),
+        "jastrow_result": lookup_jastrow(hebrew_word),
+        "voice_text": make_voice_text("; ".join(data.get("definitions", []))),
+        "ok": data.get("ok", False),
+        "error": data.get("error"),
     }
 
 
