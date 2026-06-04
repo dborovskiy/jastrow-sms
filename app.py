@@ -61,62 +61,66 @@ def keypad_to_hebrew(digits: str) -> str:
 
 def extract_italic_text_from_definition(html: str) -> list[str]:
     """
-    Extract italic text only when it is:
-      1. the first meaningful text in the definition, or
+    Extract italic text when it is:
+      1. the first italic text anywhere in the definition field, even if
+         non-italic labels come before it, or
       2. the first italic text after a numbered marker like 1), 2), 3)
 
-    No extra definition-cleaning is applied.
+    This avoids later italicized examples/citations.
     """
     soup = BeautifulSoup(html or "", "html.parser")
 
     results = []
-    seen_meaningful_text = False
+    captured_first_italic = False
     allow_next_italic_after_number = False
 
     def walk(node):
-        nonlocal seen_meaningful_text, allow_next_italic_after_number
+        nonlocal captured_first_italic, allow_next_italic_after_number
 
         for child in getattr(node, "children", []):
+            # Italic node
             if getattr(child, "name", None) in ["i", "em"]:
                 italic_text = child.get_text(" ", strip=True)
 
                 if not italic_text:
                     continue
 
-                if not seen_meaningful_text:
+                if not captured_first_italic:
                     results.append(italic_text)
-                    seen_meaningful_text = True
+                    captured_first_italic = True
                     allow_next_italic_after_number = False
 
                 elif allow_next_italic_after_number:
                     results.append(italic_text)
-                    seen_meaningful_text = True
                     allow_next_italic_after_number = False
 
                 else:
-                    seen_meaningful_text = True
+                    # Later italic text is probably an example/citation.
+                    pass
 
+            # Other HTML tag
             elif getattr(child, "name", None) is not None:
                 walk(child)
 
+            # Plain text node
             else:
                 text = str(child).strip()
 
                 if not text:
                     continue
 
+                # If text is exactly a numbered marker like 1), 2), 3),
+                # allow the next italic phrase.
                 if re.fullmatch(r"\d+\)", text):
                     allow_next_italic_after_number = True
-                    seen_meaningful_text = True
                     continue
 
+                # If text ends with a numbered marker, e.g. "... 1)"
                 if re.search(r"\d+\)\s*$", text):
                     allow_next_italic_after_number = True
-                    seen_meaningful_text = True
                     continue
 
-                seen_meaningful_text = True
-                allow_next_italic_after_number = False
+                # Ordinary non-italic text does not block the first italic phrase.
 
     walk(soup)
 
@@ -396,6 +400,7 @@ def home():
 
 
 @app.route("/sms", methods=["POST"])
+@app.route("/sms/", methods=["POST"])
 def sms():
     incoming = request.form.get("Body", "").strip()
 
